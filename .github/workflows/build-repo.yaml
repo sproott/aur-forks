@@ -1,0 +1,86 @@
+name: Build and publish to custom repo
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      build_all:
+        description: "Build every package, ignoring the diff"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+env:
+  REPO_NAME: myaur
+  RELEASE_TAG: repo
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install tooling
+        run: pacman -Sy --noconfirm git github-cli
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2 # diff the squash-merge commit against its parent
+
+      - name: Determine package dirs to build
+        id: changed
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          all_dirs() {
+            find . -name PKGBUILD -not -path './.git/*' \
+              | xargs -r -n1 dirname | sed 's|^\./||' | sort -u
+          }
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
+            && [ "${{ inputs.build_all }}" = "true" ]; then
+            echo "Manual build_all requested"
+            dirs=$(all_dirs)
+          elif ! git rev-parse HEAD^ >/dev/null 2>&1; then
+            echo "No parent commit (initial commit) — building everything"
+            dirs=$(all_dirs)
+          else
+            dirs=$(git diff --name-only HEAD^ HEAD \
+                  | grep -E '(^|/)PKGBUILD$' | xargs -r -n1 dirname | sort -u)
+          fi
+          { echo "dirs<<EOF"; echo "$dirs"; echo "EOF"; } >> "$GITHUB_OUTPUT"
+
+      - name: Build changed packages
+        if: steps.changed.outputs.dirs != ''
+        run: |
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder  # makepkg -s needs it
+          mkdir -p /out && chown builder /out
+          chown -R builder .
+          while IFS= read -r dir; do
+            [ -z "$dir" ] && continue
+            echo "::group::build $dir"
+            sudo -u builder bash -c "cd '$dir' && makepkg -s --noconfirm --needed"
+            sudo -u builder bash -c "cp '$dir'/*.pkg.tar.zst /out/"
+            echo "::endgroup::"
+          done <<< "${{ steps.changed.outputs.dirs }}"
+
+      - name: Update repo db and upload
+        if: steps.changed.outputs.dirs != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd /out
+          gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" \
+                 -t "Package repository" -n "Rolling custom pacman repository"
+          # pull the current db so we extend it rather than recreate (keeps unchanged pkgs)
+          gh release download "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" \
+             -p "$REPO_NAME.db.tar.zst" -D . 2>/dev/null || true
+          repo-add "$REPO_NAME.db.tar.zst" *.pkg.tar.zst
+          # GitHub release assets can't be symlinks, so upload the tarball under the bare name too
+          cp --remove-destination "$(readlink -f "$REPO_NAME.db.tar.zst")" "$REPO_NAME.db"
+          [ -e "$REPO_NAME.files.tar.zst" ] && \
+            cp --remove-destination "$(readlink -f "$REPO_NAME.files.tar.zst")" "$REPO_NAME.files"
+          gh release upload "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --clobber \
+             *.pkg.tar.zst "$REPO_NAME.db.tar.zst" "$REPO_NAME.db" \
+             "$REPO_NAME.files.tar.zst" "$REPO_NAME.files"
