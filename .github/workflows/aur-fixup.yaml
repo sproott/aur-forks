@@ -15,7 +15,7 @@ jobs:
       - name: Install git
         run: pacman -Sy --noconfirm git
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
