@@ -1,0 +1,56 @@
+name: AUR fixup
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fixup:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install git
+        run: pacman -Sy --noconfirm git
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+          token: ${{ secrets.FIXUP_TOKEN }} # PAT or App token, NOT GITHUB_TOKEN
+
+      - name: Determine changed package dirs
+        id: changed
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git fetch --no-tags origin "${{ github.base_ref }}"
+          dirs=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" \
+                 | grep -E '(^|/)PKGBUILD$' | xargs -r -n1 dirname | sort -u)
+          {
+            echo "dirs<<EOF"
+            echo "$dirs"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Regenerate sums and .SRCINFO
+        if: steps.changed.outputs.dirs != ''
+        run: |
+          useradd -m builder
+          chown -R builder .
+          while IFS= read -r dir; do
+            [ -z "$dir" ] && continue
+            echo "::group::$dir"
+            sudo -u builder bash -c "cd '$dir' && updpkgsums && makepkg --printsrcinfo > .SRCINFO"
+            echo "::endgroup::"
+          done <<< "${{ steps.changed.outputs.dirs }}"
+
+      - name: Commit back
+        if: steps.changed.outputs.dirs != ''
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -u          # only tracked files — avoids staging sources updpkgsums downloaded
+          git diff --cached --quiet || git commit -m "chore: update checksums and .SRCINFO"
+          git push
