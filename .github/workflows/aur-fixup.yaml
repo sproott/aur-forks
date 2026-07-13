@@ -7,8 +7,33 @@ on:
 permissions:
   contents: write
 
+env:
+  BOT_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+
 jobs:
+  # Skip the heavy fixup job on our own checksum commit. A skipped required check
+  # still passes branch protection, so auto-merge proceeds — and the container
+  # never spins up, so the bot can't loop on its own commit.
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      self: ${{ steps.check.outputs.self }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          author=$(gh api "repos/${{ github.repository }}/commits/${{ github.event.pull_request.head.sha }}" \
+                   --jq '.commit.author.email')
+          [ "$author" = "$BOT_EMAIL" ] && self=true || self=false
+          echo "head commit author: $author (self=$self)"
+          echo "self=$self" >> "$GITHUB_OUTPUT"
+
   fixup:
+    needs: detect
+    # `!cancelled()` (not a bare condition) keeps fixup running even if detect
+    # failed, so a broken gate can't let an un-fixed PR sail through auto-merge.
+    if: ${{ !cancelled() && needs.detect.outputs.self != 'true' }}
     runs-on: ubuntu-latest
     container: archlinux:base-devel
     steps:
@@ -48,9 +73,9 @@ jobs:
 
       - name: Commit back
         if: steps.changed.outputs.dirs != ''
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -u          # only tracked files — avoids staging sources updpkgsums downloaded
-          git diff --cached --quiet || git commit -m "chore: update checksums and .SRCINFO"
-          git push
+        uses: stefanzweifel/git-auto-commit-action@4a55954c782fc1ea30b9056cd3e7a2b40ca8887d # v7.2.0
+        with:
+          commit_message: "chore: update checksums and .SRCINFO"
+          add_options: "-u" # tracked files only — don't stage downloaded sources
+          # override author so it matches the committer default (detect gate + gitIgnoredAuthors)
+          commit_author: "github-actions[bot] <${{ env.BOT_EMAIL }}>"
