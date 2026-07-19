@@ -2,7 +2,7 @@
 
 pkgname=apm-bin
 pkgdesc="Agent Package Manager by Microsoft"
-pkgver=0.25.0 # renovate: datasource=github-releases depName=microsoft/apm
+pkgver=0.26.0 # renovate: datasource=github-releases depName=microsoft/apm
 pkgrel=1
 arch=('x86_64' 'aarch64')
 url="https://github.com/microsoft/apm"
