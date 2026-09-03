@@ -1,4 +1,8 @@
-# Pacman package registry
+# AUR package forks
+
+Modified AUR packages that are published through a custom Pacman repository.
+These are forks of package definitions maintained by somebody else on AUR and
+are not pushed back to their AUR remotes.
 
 ## Validate packages locally
 
@@ -8,10 +12,10 @@ Build every package in a disposable Arch Linux container:
 ./scripts/validate-builds.sh
 ```
 
-Pass package directories to validate a subset:
+Pass a package directory to validate a subset:
 
 ```sh
-./scripts/validate-builds.sh awscurl-git awsd-git
+./scripts/validate-builds.sh apm-bin
 ```
 
 The script uses Podman when available, otherwise Docker. Override the engine or
