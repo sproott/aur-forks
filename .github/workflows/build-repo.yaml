@@ -100,11 +100,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           allowed_package_bases=$(
-            find . -name PKGBUILD -not -path './.git/*' -exec dirname {} \; \
-              | sort -u \
-              | while read -r dir; do
-                  (cd "$dir" && makepkg --printsrcinfo)
-                done \
+            find . -name .SRCINFO -not -path './.git/*' -exec cat {} + \
               | awk '$1 == "pkgbase" { print $3 }' \
               | sort -u
           )
