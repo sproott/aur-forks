@@ -5,7 +5,7 @@
       "customType": "regex",
       "managerFilePatterns": ["/(^|/)PKGBUILD$/"],
       "matchStrings": [
-        "pkgver=(?<currentValue>.*) # renovate: datasource=(?<datasource>.*) depName=(?<depName>.*)"
+        "pkgver=(?<currentValue>\\S+) # renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?"
       ],
       "extractVersionTemplate": "^v?(?<version>.*)$"
     }
