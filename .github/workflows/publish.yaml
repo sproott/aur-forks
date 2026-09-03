@@ -1,99 +1,50 @@
-name: Build and publish to custom repo
+name: Publish custom package repository
+
 on:
-  push:
+  workflow_run:
+    workflows: [Validate forked AUR packages]
+    types: [completed]
     branches: [main]
-  schedule:
-    - cron: "17 3 * * *"
-  workflow_dispatch:
-    inputs:
-      build_all:
-        description: "Build every package, ignoring the diff"
-        type: boolean
-        default: true
 
 permissions:
+  actions: read
   contents: write
+
+concurrency:
+  group: forks-publish
+  cancel-in-progress: false
 
 env:
   REPO_NAME: myaur
   RELEASE_TAG: repo
 
 jobs:
-  build:
+  publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event != 'pull_request'
     runs-on: ubuntu-latest
     container: archlinux:base-devel
     steps:
-      - name: Restore Pacman package cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: /var/cache/pacman/pkg
-          key: pacman-${{ runner.arch }}-${{ github.run_id }}
-          restore-keys: |
-            pacman-${{ runner.arch }}-
-
       - name: Install tooling
-        run: pacman -Sy --noconfirm git github-cli pacman-contrib
+        run: pacman -Sy --noconfirm git github-cli
 
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2 # diff the squash-merge commit against its parent
+          ref: ${{ github.event.workflow_run.head_sha }}
 
-      - name: Configure existing custom repo
+      - name: Download validated packages
         env:
           GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
-          mkdir -p /repo-cache
+          mkdir -p /out /repo-cache
+          gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" \
+            -n repository-packages -D /out
           if gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release download "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" \
-              -p '*.pkg.tar.zst' -p "$REPO_NAME.db.tar.zst" -D /repo-cache
-            cp --remove-destination "/repo-cache/$REPO_NAME.db.tar.zst" "/repo-cache/$REPO_NAME.db"
-            cat >> /etc/pacman.conf <<EOF
-
-          [$REPO_NAME]
-          SigLevel = Optional TrustAll
-          Server = file:///repo-cache
-          EOF
-            pacman -Sy --noconfirm
+              -p '*.pkg.tar.zst' -D /repo-cache
           fi
-
-      - name: Determine package dirs to build
-        id: changed
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          all_dirs() {
-            find . -name PKGBUILD -not -path './.git/*' \
-              -exec dirname {} \; | sed 's|^\./||' | sort -u
-          }
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
-            && [ "${{ inputs.build_all }}" = "true" ]; then
-            echo "Manual build_all requested"
-            dirs=$(all_dirs)
-          elif [ "${{ github.event_name }}" = "schedule" ]; then
-            echo "Nightly VCS package build"
-            dirs=$(all_dirs | grep -- '-git$' || true)
-          elif ! git rev-parse HEAD^ >/dev/null 2>&1; then
-            echo "No parent commit (initial commit) — building everything"
-            dirs=$(all_dirs)
-          else
-            dirs=$(git diff --name-only HEAD^ HEAD \
-                  | grep -E '(^|/)PKGBUILD$' | xargs -r -n1 dirname | sort -u)
-          fi
-          { echo "dirs<<EOF"; echo "$dirs"; echo "EOF"; } >> "$GITHUB_OUTPUT"
-
-      - name: Stage existing package assets
-        run: |
-          mkdir -p /out
-          cp /repo-cache/*.pkg.tar.zst /out/ 2>/dev/null || true
-
-      - name: Build changed packages
-        if: steps.changed.outputs.dirs != ''
-        run: |
-          useradd -m builder
-          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder  # makepkg -s needs it
-          chown builder /out
-          chown -R builder .
-          mapfile -t package_dirs <<< "${{ steps.changed.outputs.dirs }}"
-          sudo -H -u builder ./scripts/build-packages.sh --output /out "${package_dirs[@]}"
 
       - name: Reconcile repo db and release assets
         env:
@@ -171,10 +122,3 @@ jobs:
           gh release upload "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --clobber \
              ./*.pkg.tar.zst "$REPO_NAME.db.tar.zst" "$REPO_NAME.db" \
              "$REPO_NAME.files.tar.zst" "$REPO_NAME.files"
-
-      - name: Prune Pacman package cache
-        if: always()
-        run: |
-          find /var/cache/pacman/pkg -type f -name '*.part' -delete
-          paccache --remove --keep 1
-          paccache --remove --uninstalled --keep 0
