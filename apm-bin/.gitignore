@@ -1,1 +1,8 @@
 /apm-*
+/pkg/
+/src/
+/*.pkg.tar*
+/*.src.tar*
+/LICENSE
+/*.log
+/*.log.*
