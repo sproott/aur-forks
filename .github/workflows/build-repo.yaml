@@ -2,6 +2,8 @@ name: Build and publish to custom repo
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
       build_all:
@@ -28,18 +30,39 @@ jobs:
         with:
           fetch-depth: 2 # diff the squash-merge commit against its parent
 
+      - name: Configure existing custom repo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /repo-cache
+          if gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release download "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" \
+              -p '*.pkg.tar.zst' -p "$REPO_NAME.db.tar.zst" -D /repo-cache
+            cp --remove-destination "/repo-cache/$REPO_NAME.db.tar.zst" "/repo-cache/$REPO_NAME.db"
+            cat >> /etc/pacman.conf <<EOF
+
+          [$REPO_NAME]
+          SigLevel = Optional TrustAll
+          Server = file:///repo-cache
+          EOF
+            pacman -Sy --noconfirm
+          fi
+
       - name: Determine package dirs to build
         id: changed
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           all_dirs() {
             find . -name PKGBUILD -not -path './.git/*' \
-              | xargs -r -n1 dirname | sed 's|^\./||' | sort -u
+              -exec dirname {} \; | sed 's|^\./||' | sort -u
           }
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
             && [ "${{ inputs.build_all }}" = "true" ]; then
             echo "Manual build_all requested"
             dirs=$(all_dirs)
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "Nightly VCS package build"
+            dirs=$(all_dirs | grep -- '-git$' || true)
           elif ! git rev-parse HEAD^ >/dev/null 2>&1; then
             echo "No parent commit (initial commit) — building everything"
             dirs=$(all_dirs)
@@ -56,13 +79,8 @@ jobs:
           echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder  # makepkg -s needs it
           mkdir -p /out && chown builder /out
           chown -R builder .
-          while IFS= read -r dir; do
-            [ -z "$dir" ] && continue
-            echo "::group::build $dir"
-            sudo -u builder bash -c "cd '$dir' && makepkg -s --noconfirm --needed"
-            sudo -u builder bash -c "cp '$dir'/*.pkg.tar.zst /out/"
-            echo "::endgroup::"
-          done <<< "${{ steps.changed.outputs.dirs }}"
+          mapfile -t package_dirs <<< "${{ steps.changed.outputs.dirs }}"
+          sudo -H -u builder ./scripts/build-packages.sh --output /out "${package_dirs[@]}"
 
       - name: Update repo db and upload
         if: steps.changed.outputs.dirs != ''
@@ -76,11 +94,11 @@ jobs:
           # pull the current db so we extend it rather than recreate (keeps unchanged pkgs)
           gh release download "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" \
              -p "$REPO_NAME.db.tar.zst" -D . 2>/dev/null || true
-          repo-add "$REPO_NAME.db.tar.zst" *.pkg.tar.zst
+          repo-add "$REPO_NAME.db.tar.zst" ./*.pkg.tar.zst
           # GitHub release assets can't be symlinks, so upload the tarball under the bare name too
           cp --remove-destination "$(readlink -f "$REPO_NAME.db.tar.zst")" "$REPO_NAME.db"
           [ -e "$REPO_NAME.files.tar.zst" ] && \
             cp --remove-destination "$(readlink -f "$REPO_NAME.files.tar.zst")" "$REPO_NAME.files"
           gh release upload "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --clobber \
-             *.pkg.tar.zst "$REPO_NAME.db.tar.zst" "$REPO_NAME.db" \
+             ./*.pkg.tar.zst "$REPO_NAME.db.tar.zst" "$REPO_NAME.db" \
              "$REPO_NAME.files.tar.zst" "$REPO_NAME.files"

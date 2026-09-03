@@ -76,6 +76,6 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@4a55954c782fc1ea30b9056cd3e7a2b40ca8887d # v7.2.0
         with:
           commit_message: "chore: update checksums and .SRCINFO"
-          add_options: "-u" # tracked files only — don't stage downloaded sources
+          file_pattern: "*/PKGBUILD */.SRCINFO"
           # override author so it matches the committer default (detect gate + gitIgnoredAuthors)
           commit_author: "github-actions[bot] <${{ env.BOT_EMAIL }}>"

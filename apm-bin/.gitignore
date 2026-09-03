@@ -1,11 +1,1 @@
-# makepkg build artifacts
-/pkg/
-/src/
-/*.pkg.tar*
-/*.src.tar*
-
 /apm-*
-
-# makepkg logs
-/*.log
-/*.log.*
