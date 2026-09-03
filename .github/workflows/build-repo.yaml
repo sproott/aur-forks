@@ -23,8 +23,16 @@ jobs:
     runs-on: ubuntu-latest
     container: archlinux:base-devel
     steps:
+      - name: Restore Pacman package cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /var/cache/pacman/pkg
+          key: pacman-${{ runner.arch }}-${{ github.run_id }}
+          restore-keys: |
+            pacman-${{ runner.arch }}-
+
       - name: Install tooling
-        run: pacman -Sy --noconfirm git github-cli
+        run: pacman -Sy --noconfirm git github-cli pacman-contrib
 
       - uses: actions/checkout@v4
         with:
@@ -102,3 +110,10 @@ jobs:
           gh release upload "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --clobber \
              ./*.pkg.tar.zst "$REPO_NAME.db.tar.zst" "$REPO_NAME.db" \
              "$REPO_NAME.files.tar.zst" "$REPO_NAME.files"
+
+      - name: Prune Pacman package cache
+        if: always()
+        run: |
+          find /var/cache/pacman/pkg -type f -name '*.part' -delete
+          paccache --remove --keep 1
+          paccache --remove --uninstalled --keep 0
