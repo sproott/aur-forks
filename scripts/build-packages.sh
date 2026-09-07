@@ -39,6 +39,79 @@ if ((${#package_dirs[@]} == 0)); then
     )
 fi
 
+mapfile -t all_package_dirs < <(
+    find . -name PKGBUILD -not -path './.git/*' -exec dirname {} \; \
+        | sed 's|^\./||' \
+        | sort -u
+)
+
+declare -A package_dirs_by_name selected visiting visited
+for package_dir in "${all_package_dirs[@]}"; do
+    while read -r package_name; do
+        [[ -n "$package_name" ]] || continue
+        package_dirs_by_name["$package_name"]=$package_dir
+    done < <(awk '$1 == "pkgname" { print $3 }' "$package_dir/.SRCINFO")
+done
+
+local_dependency_dirs() {
+    local package_dir=$1
+    local dependency dependency_dir
+
+    while read -r dependency; do
+        dependency=${dependency%%[<>=]*}
+        dependency_dir=${package_dirs_by_name[$dependency]:-}
+        [[ -n "$dependency_dir" ]] && printf '%s\n' "$dependency_dir"
+    done < <(
+        awk '$1 == "depends" || $1 == "makedepends" || $1 == "checkdepends" { print $3 }' \
+            "$package_dir/.SRCINFO"
+    )
+}
+
+for package_dir in "${package_dirs[@]}"; do
+    selected["$package_dir"]=1
+done
+
+added=true
+while [[ "$added" == true ]]; do
+    added=false
+
+    for package_dir in "${!selected[@]}"; do
+        while read -r dependency_dir; do
+            if [[ -z "${selected[$dependency_dir]:-}" ]]; then
+                selected["$dependency_dir"]=1
+                added=true
+            fi
+        done < <(local_dependency_dirs "$package_dir")
+    done
+done
+
+ordered_package_dirs=()
+visit_package_dir() {
+    local package_dir=$1
+    local dependency_dir
+
+    [[ -n "${visited[$package_dir]:-}" ]] && return 0
+
+    if [[ -n "${visiting[$package_dir]:-}" ]]; then
+        printf 'Circular local package dependency involving %s\n' "$package_dir" >&2
+        exit 1
+    fi
+
+    visiting["$package_dir"]=1
+    while read -r dependency_dir; do
+        [[ -n "${selected[$dependency_dir]:-}" ]] && visit_package_dir "$dependency_dir"
+    done < <(local_dependency_dirs "$package_dir")
+    unset 'visiting[$package_dir]'
+    visited["$package_dir"]=1
+    ordered_package_dirs+=("$package_dir")
+}
+
+for package_dir in "${package_dirs[@]}"; do
+    visit_package_dir "$package_dir"
+done
+
+package_dirs=("${ordered_package_dirs[@]}")
+
 if "$dry_run"; then
     printf '%s\n' "${package_dirs[@]}"
     exit 0
@@ -66,7 +139,10 @@ while ((${#pending[@]} > 0)); do
                 cp -- "${package_files[@]}" "$output_dir/"
             fi
 
-            sudo pacman -U --noconfirm --needed -- "${package_files[@]}"
+            if ! sudo pacman -U --noconfirm --needed -- "${package_files[@]}"; then
+                printf 'Unable to install built package files for %s\n' "$package_dir" >&2
+                exit 1
+            fi
             progress=true
         else
             deferred+=("$package_dir")

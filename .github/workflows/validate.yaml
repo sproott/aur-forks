@@ -38,6 +38,22 @@ jobs:
           restore-keys: |
             pacman-${{ runner.arch }}-
 
+      - name: Cache makepkg sources
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /var/cache/makepkg/src
+          key: makepkg-src-${{ runner.arch }}-${{ hashFiles('**/PKGBUILD', '**/.SRCINFO') }}
+          restore-keys: |
+            makepkg-src-${{ runner.arch }}-
+
+      - name: Cache Stack artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /var/cache/makepkg/stack
+          key: stack-${{ runner.arch }}-${{ hashFiles('**/stack.yaml', '**/stack.yaml.lock', '**/package.yaml', '**/*.cabal') }}
+          restore-keys: |
+            stack-${{ runner.arch }}-
+
       - name: Configure existing custom repo
         env:
           GH_TOKEN: ${{ github.token }}
@@ -172,13 +188,17 @@ jobs:
         id: build
         if: steps.changed.outputs.dirs != ''
         run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           useradd --create-home builder
           echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
           chown builder:builder /out
+          install -d -o builder -g builder /var/cache/makepkg/src
+          install -d -o builder -g builder /var/cache/makepkg/stack
+          install -d /etc/makepkg.conf.d
+          printf 'SRCDEST=/var/cache/makepkg/src\n' > /etc/makepkg.conf.d/source-cache.conf
           chown -R builder:builder .
           mapfile -t package_dirs <<< "${{ steps.changed.outputs.dirs }}"
-          sudo -H -u builder ./scripts/build-packages.sh --output /out "${package_dirs[@]}"
+          sudo -H -u builder env STACK_ROOT=/var/cache/makepkg/stack \
+            ./scripts/build-packages.sh --output /out "${package_dirs[@]}"
 
       - name: Upload package repository artifact
         if: success()

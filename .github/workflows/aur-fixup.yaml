@@ -52,7 +52,7 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git fetch --no-tags origin "${{ github.base_ref }}"
           dirs=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" \
-                 | grep -E '(^|/)PKGBUILD$' | xargs -r -n1 dirname | sort -u)
+               | grep -E '(^|/)(PKGBUILD|\.SRCINFO)$' | xargs -r -n1 dirname | sort -u)
           {
             echo "dirs<<EOF"
             echo "$dirs"

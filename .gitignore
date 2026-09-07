@@ -1,4 +1,6 @@
 # makepkg build artifacts
+.makepkg-src-cache/
+.stack-cache/
 pkg/
 src/
 *.pkg.tar*
