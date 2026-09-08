@@ -133,6 +133,7 @@ jobs:
                 version_changes+="$version_change"$'\n'
               fi
             done <<< "$direct_dirs"
+            version_changes=${version_changes%$'\n'}
           fi
 
           if [ -n "$dirs" ]; then
