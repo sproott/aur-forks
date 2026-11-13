@@ -85,6 +85,8 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          direct_dirs=""
+          infra_changes=""
 
           all_dirs() {
             find . -name PKGBUILD -not -path './.git/*' \
@@ -104,22 +106,25 @@ jobs:
             reason="No comparison commit available"
           else
             changed_files=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
-            if grep -Eq '^(\.github/workflows/validate\.yaml|scripts/build-packages\.sh)$' \
-              <<< "$changed_files"; then
+            infra_changes=$(
+              grep -E '^(\.github/workflows/validate\.yaml|scripts/build-packages\.sh)$' \
+                <<< "$changed_files" || true
+            )
+            direct_dirs=$(
+              while read -r path; do
+                package_dir=${path%%/*}
+                [ -f "$package_dir/PKGBUILD" ] && echo "$package_dir"
+              done <<< "$changed_files" | sort -u
+            )
+            if [ -n "$infra_changes" ]; then
               dirs=$(all_dirs)
               reason="Shared validation infrastructure changed"
             else
-              dirs=$(
-                while read -r path; do
-                  package_dir=${path%%/*}
-                  [ -f "$package_dir/PKGBUILD" ] && echo "$package_dir"
-                done <<< "$changed_files" | sort -u
-              )
+              dirs=$direct_dirs
               reason="Package changes detected"
             fi
           fi
 
-          direct_dirs=$dirs
           version_changes=""
           if [ -n "$direct_dirs" ] && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
             while read -r package_dir; do
@@ -183,6 +188,9 @@ jobs:
             echo 'version_changes<<EOF'
             echo "$version_changes"
             echo 'EOF'
+            echo 'infra_changes<<EOF'
+            echo "$infra_changes"
+            echo 'EOF'
             echo "reason=$reason"
           } >> "$GITHUB_OUTPUT"
 
@@ -221,6 +229,7 @@ jobs:
         env:
           BUILD_OUTCOME: ${{ steps.build.outcome }}
           DIRECT_DIRS: ${{ steps.changed.outputs.direct_dirs }}
+          INFRA_CHANGES: ${{ steps.changed.outputs.infra_changes }}
           PACKAGE_DIRS: ${{ steps.changed.outputs.dirs }}
           REASON: ${{ steps.changed.outputs.reason }}
           VERSION_CHANGES: ${{ steps.changed.outputs.version_changes }}
@@ -229,6 +238,15 @@ jobs:
             echo '<!-- forks-validation-report -->'
             echo '## Forked AUR package validation'
             echo
+            if [ -n "$INFRA_CHANGES" ]; then
+              echo '> [!WARNING]'
+              echo '> **Shared validation infrastructure changed.** All packages were rebuilt.'
+              echo '>'
+              while read -r path; do echo "> - \`$path\`"; done <<< "$INFRA_CHANGES"
+              echo '>'
+              echo '> Rebuilt binaries can differ from published ones without a version change. Bump `pkgrel` on affected packages to ship them.'
+              echo
+            fi
             echo "**Result:** ${BUILD_OUTCOME:-not run}"
             echo "**Selection:** ${REASON:-Change detection did not complete}"
             echo
