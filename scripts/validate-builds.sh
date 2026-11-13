@@ -24,7 +24,7 @@ fi
     "$container_image" \
     bash -c '
         set -euo pipefail
-        pacman -Sy --noconfirm git sudo
+        pacman -Syu --noconfirm git sudo
         install -d -m 777 /var/cache/makepkg/src
         install -d -m 777 /var/cache/makepkg/stack
         export STACK_ROOT=/var/cache/makepkg/stack

@@ -27,7 +27,7 @@ jobs:
     container: archlinux:base-devel
     steps:
       - name: Install tooling
-        run: pacman -Sy --noconfirm git github-cli
+        run: pacman -Syu --noconfirm git github-cli
 
       - uses: actions/checkout@v4
         with:
