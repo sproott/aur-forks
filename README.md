@@ -22,7 +22,9 @@ The script uses Podman when available, otherwise Docker. Override the engine or
 image with `CONTAINER_ENGINE` and `CONTAINER_IMAGE`.
 
 GitHub Actions validates changed packages and uploads the complete package set as
-an artifact. Successful main-branch validation triggers a separate publishing
+an artifact. A rebuild whose content differs from the published package of the same
+version is kept out of the artifact; on pull requests, validation bumps its `pkgrel`
+and commits the change to the branch. Successful main-branch validation triggers a separate publishing
 workflow that reconciles the custom repository release. The container validator
 also calls `scripts/build-packages.sh`; it discovers package directories when none
 are supplied, builds unresolved local dependencies in retry passes, and installs

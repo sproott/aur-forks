@@ -135,8 +135,9 @@ while ((${#pending[@]} > 0)); do
         if (cd "$package_dir" && makepkg --syncdeps --noconfirm --needed --force); then
             package_files=("$package_dir"/*.pkg.tar.zst)
 
-            if [[ -n "$output_dir" ]]; then
-                cp -- "${package_files[@]}" "$output_dir/"
+            if [[ -n "$output_dir" ]] && ! cp -- "${package_files[@]}" "$output_dir/"; then
+                printf 'Unable to copy built package files for %s\n' "$package_dir" >&2
+                exit 1
             fi
 
             if ! sudo pacman -U --noconfirm --needed -- "${package_files[@]}"; then
