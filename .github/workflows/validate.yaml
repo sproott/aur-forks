@@ -26,6 +26,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     container: archlinux:base-devel
+    outputs:
+      binary_changes: ${{ steps.binaries.outputs.binary_changes }}
     steps:
       - name: Install tooling
         run: pacman -Syu --noconfirm git github-cli pacman-contrib sudo
@@ -85,6 +87,8 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          direct_dirs=""
+          infra_changes=""
 
           all_dirs() {
             find . -name PKGBUILD -not -path './.git/*' \
@@ -104,22 +108,25 @@ jobs:
             reason="No comparison commit available"
           else
             changed_files=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
-            if grep -Eq '^(\.github/workflows/validate\.yaml|scripts/build-packages\.sh)$' \
-              <<< "$changed_files"; then
+            infra_changes=$(
+              grep -E '^(\.github/workflows/validate\.yaml|scripts/build-packages\.sh)$' \
+                <<< "$changed_files" || true
+            )
+            direct_dirs=$(
+              while read -r path; do
+                package_dir=${path%%/*}
+                [ -f "$package_dir/PKGBUILD" ] && echo "$package_dir"
+              done <<< "$changed_files" | sort -u
+            )
+            if [ -n "$infra_changes" ]; then
               dirs=$(all_dirs)
               reason="Shared validation infrastructure changed"
             else
-              dirs=$(
-                while read -r path; do
-                  package_dir=${path%%/*}
-                  [ -f "$package_dir/PKGBUILD" ] && echo "$package_dir"
-                done <<< "$changed_files" | sort -u
-              )
+              dirs=$direct_dirs
               reason="Package changes detected"
             fi
           fi
 
-          direct_dirs=$dirs
           version_changes=""
           if [ -n "$direct_dirs" ] && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
             while read -r package_dir; do
@@ -183,6 +190,9 @@ jobs:
             echo 'version_changes<<EOF'
             echo "$version_changes"
             echo 'EOF'
+            echo 'infra_changes<<EOF'
+            echo "$infra_changes"
+            echo 'EOF'
             echo "reason=$reason"
           } >> "$GITHUB_OUTPUT"
 
@@ -197,7 +207,7 @@ jobs:
         run: |
           useradd --create-home builder
           echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
-          chown builder:builder /out
+          install -d -o builder -g builder /built
           install -d -o builder -g builder /var/cache/makepkg/src
           install -d -o builder -g builder /var/cache/makepkg/stack
           install -d /etc/makepkg.conf.d
@@ -205,7 +215,34 @@ jobs:
           chown -R builder:builder .
           mapfile -t package_dirs <<< "${{ steps.changed.outputs.dirs }}"
           sudo -H -u builder env STACK_ROOT=/var/cache/makepkg/stack \
-            ./scripts/build-packages.sh --output /out "${package_dirs[@]}"
+            ./scripts/build-packages.sh --output /built "${package_dirs[@]}"
+
+      # A rebuild with the same filename as a published package never replaces it:
+      # pacman clients cache by filename, and changed content ships only through a
+      # pkgrel bump.
+      - name: Compare rebuilt packages with published ones
+        id: binaries
+        if: steps.build.outcome == 'success'
+        run: |
+          changed_dirs=""
+          for archive in /built/*.pkg.tar.zst; do
+            name=${archive##*/}
+            if [ ! -f "/out/$name" ]; then
+              cp -- "$archive" /out/
+            elif [ "$(./scripts/package-manifest.sh "/out/$name")" \
+              != "$(./scripts/package-manifest.sh "$archive")" ]; then
+              pkgbase=$(bsdtar -xOf "$archive" .PKGINFO | awk '$1 == "pkgbase" { print $3 }')
+              for srcinfo in */.SRCINFO; do
+                grep -qx "pkgbase = $pkgbase" "$srcinfo" \
+                  && changed_dirs+="${srcinfo%/.SRCINFO}"$'\n'
+              done
+            fi
+          done
+          {
+            echo 'binary_changes<<EOF'
+            printf '%s' "$changed_dirs" | sort -u
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
 
       - name: Upload package repository artifact
         if: success()
@@ -219,8 +256,10 @@ jobs:
       - name: Report validation
         if: always()
         env:
+          BINARY_CHANGES: ${{ steps.binaries.outputs.binary_changes }}
           BUILD_OUTCOME: ${{ steps.build.outcome }}
           DIRECT_DIRS: ${{ steps.changed.outputs.direct_dirs }}
+          INFRA_CHANGES: ${{ steps.changed.outputs.infra_changes }}
           PACKAGE_DIRS: ${{ steps.changed.outputs.dirs }}
           REASON: ${{ steps.changed.outputs.reason }}
           VERSION_CHANGES: ${{ steps.changed.outputs.version_changes }}
@@ -229,6 +268,26 @@ jobs:
             echo '<!-- forks-validation-report -->'
             echo '## Forked AUR package validation'
             echo
+            if [ -n "$INFRA_CHANGES" ]; then
+              echo '> [!WARNING]'
+              echo '> **Shared validation infrastructure changed.** All packages were rebuilt.'
+              echo '>'
+              while read -r path; do echo "> - \`$path\`"; done <<< "$INFRA_CHANGES"
+              echo
+            fi
+            if [ -n "$BINARY_CHANGES" ]; then
+              echo '> [!IMPORTANT]'
+              echo '> **Rebuilt binaries differ from published ones of the same version.**'
+              echo '>'
+              while read -r package_dir; do echo "> - \`$package_dir\`"; done <<< "$BINARY_CHANGES"
+              echo '>'
+              if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+                echo '> `pkgrel` is bumped automatically on this branch.'
+              else
+                echo '> Published binaries are kept. Bump `pkgrel` to ship the rebuilt ones.'
+              fi
+              echo
+            fi
             echo "**Result:** ${BUILD_OUTCOME:-not run}"
             echo "**Selection:** ${REASON:-Change detection did not complete}"
             echo
@@ -283,3 +342,40 @@ jobs:
           find /var/cache/pacman/pkg -type f -name '*.part' -delete
           paccache --remove --keep 1
           paccache --remove --uninstalled --keep 0
+  bump-pkgrel:
+    needs: build
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.build.outputs.binary_changes != ''
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install tooling
+        run: pacman -Syu --noconfirm git
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.FIXUP_TOKEN }} # PAT or App token, so the push re-runs validation
+
+      - name: Bump pkgrel and regenerate .SRCINFO
+        env:
+          PACKAGE_DIRS: ${{ needs.build.outputs.binary_changes }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          useradd --create-home builder
+          chown -R builder .
+          while read -r package_dir; do
+            [ -n "$package_dir" ] || continue
+            pkgrel=$(awk '$1 == "pkgrel" { print $3; exit }' "$package_dir/.SRCINFO")
+            sed -i "s/^pkgrel=.*/pkgrel=$(( ${pkgrel%%.*} + 1 ))/" "$package_dir/PKGBUILD"
+            sudo -u builder bash -c "cd '$package_dir' && makepkg --printsrcinfo > .SRCINFO"
+          done <<< "$PACKAGE_DIRS"
+
+      - name: Commit back
+        uses: stefanzweifel/git-auto-commit-action@d0b01107b5db882071f96de5dd4b54961ea93f4c # v7.2.1
+        with:
+          commit_message: "chore: bump pkgrel for changed binaries"
+          file_pattern: "*/PKGBUILD */.SRCINFO"
+          commit_author: "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
