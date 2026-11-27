@@ -14,8 +14,8 @@ source_x86_64=("apm-linux-x86_64-v${pkgver}.tar.gz::${_url_base}/apm-linux-x86_6
 source_aarch64=("apm-linux-arm64-v${pkgver}.tar.gz::${_url_base}/apm-linux-arm64.tar.gz")
 source=("LICENSE::https://raw.githubusercontent.com/microsoft/apm/v${pkgver}/LICENSE")
 sha256sums=('7df20dcdf9197e9945c14858d41c60f11b52b93e5b69e2b63416b874d598d322')
-sha256sums_x86_64=('3a84e9c14ab594c22e97f6ccc9be41bed14199fe4f4aa24a206d23b65919592d')
-sha256sums_aarch64=('01ba7e98b71469225298557dd06fb4ea9e8de61c739182d09b3e26c788c1d975')
+sha256sums_x86_64=('e6ee846e6625d2ed6e29a73273550e65b8482e6598d2ab3c24a9a68dc6678c17')
+sha256sums_aarch64=('06e142d76368aa4d8b1e933979b8260b16eaa41abbccbb6173d34be51754f429')
 
 package() {
     install -d "${pkgdir}/usr/lib/apm"
